@@ -53,4 +53,11 @@ object NetInfo {
         val lp = cm.getLinkProperties(cm.activeNetwork) ?: return null
         return lp.linkAddresses.map { it.address }.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }?.hostAddress
     }
+
+    /** IPv4 of the default gateway (the internet box), so it is not mistaken for a camera. */
+    fun gateway(context: Context): String? {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
+        val lp = cm.getLinkProperties(cm.activeNetwork) ?: return null
+        return lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }?.gateway?.hostAddress
+    }
 }

@@ -18,6 +18,8 @@ class FakeCamera(val mode: AuthMode, private val password: String) : HttpPoster 
     var alarm = "stopped"
     var loginCount = 0
     var supportsNewNightVision = true
+    /** Number of requests to the login endpoint (they count towards the real camera's lockout). */
+    var loginPhaseRequests = 0
 
     private val rnd = SecureRandom()
     private val b64 = Base64.getEncoder()
@@ -37,7 +39,7 @@ class FakeCamera(val mode: AuthMode, private val password: String) : HttpPoster 
 
     override fun post(url: String, body: ByteArray, headers: Map<String, String>): HttpResult {
         val path = url.substringAfter("://").substringAfter("/")
-        if (path.isEmpty()) return json(login(parseObject(String(body))))
+        if (path.isEmpty()) { loginPhaseRequests++; return json(login(parseObject(String(body)))) }
         val tok = path.substringAfter("stok=").substringBefore("/ds")
         if (tok != stok) return json(jo("error_code" to -40401))
         return when (mode) {
@@ -62,7 +64,7 @@ class FakeCamera(val mode: AuthMode, private val password: String) : HttpPoster 
                 else -> jo("error_code" to -40401)
             }
             AuthMode.SECURE_V3 -> when {
-                sub == "discover" -> jo("error_code" to -40413, "result" to jo("data" to jo("code" to -40413, "encrypt_type" to listOf("3"))))
+                sub == "discover" -> jo("error_code" to -40413, "result" to jo("data" to jo("code" to -40209)))
                 p.str("digest_passwd") != null -> {
                     val expected = Crypto.sha256HexUpper(storedHash + cnonce + nonce) + cnonce + nonce
                     if (p.str("digest_passwd") != expected || p.str("cnonce") != cnonce) jo("error_code" to -40401)
@@ -75,7 +77,7 @@ class FakeCamera(val mode: AuthMode, private val password: String) : HttpPoster 
                 p.str("cnonce") != null -> {
                     cnonce = p.str("cnonce")!!; nonce = hex(16)
                     val confirm = Crypto.sha256HexUpper(cnonce + storedHash + nonce) + nonce + cnonce
-                    jo("error_code" to -40413, "result" to jo("data" to jo("code" to -40413, "encrypt_type" to listOf("3"), "nonce" to nonce, "device_confirm" to confirm)))
+                    jo("error_code" to -40413, "result" to jo("data" to jo("code" to -40413, "nonce" to nonce, "device_confirm" to confirm)))
                 }
                 else -> jo("error_code" to -40413, "result" to jo("data" to jo("encrypt_type" to listOf("3"))))
             }

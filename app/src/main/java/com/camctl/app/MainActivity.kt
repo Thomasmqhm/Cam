@@ -76,13 +76,20 @@ fun DiscoverScreen(s: UiState, vm: CamViewModel) {
             }
             if (s.scanning) LinearProgressIndicator(progress = { s.scanProgress / 254f }, modifier = Modifier.fillMaxWidth())
             s.devices.forEach { d -> DeviceRow(d, selected = d.ip == s.host) { vm.edit { it.copy(host = d.ip) } } }
+            if (s.devices.count { it.looksLikeTapo } > 0) {
+                OutlinedButton(onClick = vm::identifyAll, enabled = !s.scanning, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Badge, null); Spacer(Modifier.width(8.dp)); Text("Identifier les appareils Tapo (modèle, nom, MAC)")
+                }
+                Text("Utilise le mot de passe saisi ci-dessous, en lecture seule.", color = Color.Gray, fontSize = 12.sp)
+            }
             if (!s.scanning && s.devices.isEmpty()) Text("Aucun résultat pour l'instant. Vous pouvez aussi saisir l'IP (visible dans l'appli Tapo ou votre box).", color = Color.Gray, fontSize = 13.sp)
         }
 
         Section("2 · Se connecter") {
             OutlinedTextField(s.host, { v -> vm.edit { it.copy(host = v) } }, label = { Text("Adresse IP de la caméra") },
                 singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(s.password, { v -> vm.edit { it.copy(password = v) } }, label = { Text("Mot de passe du compte TP-Link") },
+            if (s.devices.any { it.ip == s.host && it.isGateway }) Text("⚠ Cette adresse est votre box, pas une caméra.", color = Color(0xFFE8A0A0), fontSize = 13.sp)
+            OutlinedTextField(s.password, { v -> vm.edit { it.copy(password = v) } }, label = { Text("Mot de passe du compte TP-Link (appli Tapo)") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Text("Pour la vidéo (facultatif) : le « Compte caméra » créé dans l'appli Tapo › Paramètres avancés.", color = Color.Gray, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -106,12 +113,14 @@ fun DeviceRow(d: FoundDevice, selected: Boolean, onClick: () -> Unit) {
         Modifier.fillMaxWidth().background(bg, RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(if (d.looksLikeTapo) Icons.Default.Videocam else Icons.Default.DeviceUnknown, null, tint = if (d.looksLikeTapo) Color(0xFF8BD3A5) else Color.Gray)
+        Icon(when { d.isGateway -> Icons.Default.Router; d.looksLikeTapo -> Icons.Default.Videocam; else -> Icons.Default.DeviceUnknown }, null,
+            tint = if (d.looksLikeTapo) Color(0xFF8BD3A5) else Color.Gray)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(d.ip, fontWeight = FontWeight.SemiBold)
-            Text(listOfNotNull(d.label, d.authHint).joinToString(" · "), fontSize = 12.sp, color = Color.LightGray)
-            Text("Ports : ${d.openPorts.joinToString()}", fontSize = 12.sp, color = Color.Gray)
+            Text(d.label, fontSize = 12.sp, color = Color.LightGray)
+            Text(listOfNotNull("Ports : ${d.openPorts.joinToString()}", d.authHint, if (d.looksLikeTapo && !d.rtspOpen) "vidéo RTSP fermée" else null).joinToString(" · "),
+                fontSize = 12.sp, color = Color.Gray)
         }
         if (selected) Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
     }
@@ -137,6 +146,8 @@ fun ControlScreen(s: UiState, vm: CamViewModel) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black), contentAlignment = Alignment.Center) {
             val url = s.rtspUrl
             if (url == null) Text("Vidéo : renseignez le compte caméra\nsur l'écran de connexion", color = Color.Gray, fontSize = 13.sp)
+            else if (!s.rtspOpen) Text("Port vidéo 554 fermé sur la caméra.\nDans l'appli Tapo : Moi › Tapo Lab › Compatibilité tierce = ON,\npuis Paramètres avancés › Compte caméra.",
+                color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(16.dp))
             else if (s.privacy == true) Text("Mode privé actif : objectif masqué", color = Color.Gray)
             else RtspPlayer(url, Modifier.fillMaxSize())
         }

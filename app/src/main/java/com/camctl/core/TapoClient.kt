@@ -99,17 +99,23 @@ class TapoClient(
     fun detectMode(): AuthMode {
         mode?.let { return it }
         val discover = runCatching { postLogin(jo("sub_method" to "discover")) }.getOrNull()
-        log("login/discover → ${discover ?: "pas de réponse"}")
+        log("login/discover → ${discover?.let { redact(it) } ?: "pas de réponse"}")
         val tpap = discover?.at("result", "tpap") as? JSONObject
         val detected = when {
             tpap != null && 2 in tpap.intList("pake") -> { tpapInfo = tpap; AuthMode.TPAP }
             discover != null && offersV3(discover) -> AuthMode.SECURE_V3
             else -> {
-                val probe = postLogin(jo("encrypt_type" to "3", "username" to USER, "cnonce" to nonceHex(8)))
-                log("sonde encrypt_type 3 → $probe")
+                val cn = nonceHex(8)
+                val probe = postLogin(jo("encrypt_type" to "3", "username" to USER, "cnonce" to cn))
+                log("sonde encrypt_type 3 → ${redact(probe)}")
                 when {
                     probe.errorCode() == -40211 -> AuthMode.TPAP
-                    offersV3(probe) -> AuthMode.SECURE_V3
+                    offersV3(probe) -> {
+                        // The probe already is step 1 of the secure login: reuse it (each login-phase
+                        // request counts towards the camera's lockout).
+                        if (probe.str("result", "data", "nonce") != null) { probeCnonce = cn; probeReply = probe }
+                        AuthMode.SECURE_V3
+                    }
                     else -> AuthMode.LEGACY
                 }
             }
@@ -147,13 +153,20 @@ class TapoClient(
 
     private fun postJson(url: String, body: JSONObject, extra: Map<String, String> = emptyMap()): JSONObject {
         val res = http.post(url, body.toString().toByteArray(), headers() + extra)
-        if (res.body.isEmpty()) throw TapoException(null, "Réponse vide (HTTP ${res.code})")
+        if (res.body.isEmpty() || res.text.trimStart().startsWith("<")) {
+            throw TapoException(null, "$host ne parle pas le protocole Tapo (HTTP ${res.code}). Est-ce bien une caméra ? La box est souvent en .1")
+        }
         return parseObject(res.text)
     }
 
     private fun postLogin(params: JSONObject): JSONObject = postJson("$base/", jo("method" to "login", "params" to params))
 
-    private fun offersV3(r: JSONObject) = r.errorCode() == -40413 && "3" in r.stringList("result", "data", "encrypt_type")
+    /** encrypt_type 3 is on offer if the camera lists it, or answers our cnonce with a nonce + device_confirm. */
+    private fun offersV3(r: JSONObject) = r.errorCode() == -40413 &&
+        ("3" in r.stringList("result", "data", "encrypt_type") || (r.str("result", "data", "nonce") != null && r.str("result", "data", "device_confirm") != null))
+
+    private var probeCnonce: String? = null
+    private var probeReply: JSONObject? = null
 
     private fun nonceHex(bytes: Int): String = Crypto.hex(ByteArray(bytes).also { random.nextBytes(it) }).uppercase()
 
@@ -180,8 +193,10 @@ class TapoClient(
     // ------------------------------------------------------------------ SECURE_V3 (encrypt_type 3)
 
     private fun loginSecure(): Session {
-        val cnonce = nonceHex(8)
-        val first = postLogin(jo("cnonce" to cnonce, "encrypt_type" to "3", "username" to USER))
+        val reused = probeReply
+        val cnonce = if (reused != null) probeCnonce!! else nonceHex(8)
+        probeReply = null; probeCnonce = null
+        val first = reused ?: postLogin(jo("cnonce" to cnonce, "encrypt_type" to "3", "username" to USER))
         checkLockout(first)
         val nonce = first.str("result", "data", "nonce")
         val confirm = first.str("result", "data", "device_confirm")
@@ -191,7 +206,7 @@ class TapoClient(
         val candidates = listOf(Crypto.sha256HexUpper(password), Crypto.md5HexUpper(password))
         val hashed = candidates.firstOrNull { hp ->
             Crypto.sha256HexUpper(cnonce + hp + nonce) + nonce + cnonce == confirm
-        } ?: throw TapoException(-40401, "Mot de passe incorrect (la caméra ne confirme pas le mot de passe)")
+        } ?: throw TapoException(-40401, "Mot de passe refusé : la caméra attend le mot de passe du compte TP-Link (celui de l'appli Tapo), pas celui du « compte caméra »")
 
         val digest = Crypto.sha256HexUpper(hashed + cnonce + nonce) + cnonce + nonce
         val second = postLogin(jo("cnonce" to cnonce, "encrypt_type" to "3", "digest_passwd" to digest, "username" to USER))
@@ -337,6 +352,17 @@ class TapoClient(
 
     companion object {
         const val USER = "admin"
+
+        /** Copy of a login reply safe to show: secrets that would allow offline password guessing are masked. */
+        fun redact(o: JSONObject): String {
+            val c = JSONObject(o.toString())
+            c.optJSONObject("result")?.let { r ->
+                if (r.has("stok")) r.put("stok", "***")
+                r.optJSONObject("data")?.let { d -> for (k in listOf("nonce", "device_confirm", "key")) if (d.has(k)) d.put(k, "***") }
+                for (k in listOf("dev_share", "dev_salt", "dev_random", "dev_confirm")) if (r.has(k)) r.put(k, "***")
+            }
+            return c.toString()
+        }
         val SESSION_ERRORS = setOf(-40401, -40421, -1)
 
         fun seqBytes(seq: Int): ByteArray = ByteBuffer.allocate(4).putInt(seq).array()

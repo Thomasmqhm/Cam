@@ -58,6 +58,25 @@ class TapoClientTest {
     }
 
     @Test
+    fun secureLoginReusesProbeAndHidesSecretsFromLog() {
+        val fake = FakeCamera(AuthMode.SECURE_V3, pw)
+        val lines = mutableListOf<String>()
+        val cam = TapoCamera(TapoClient("192.168.1.20", pw, http = fake, log = { lines += it }))
+        cam.info()
+        // discover + probe (reused as step 1) + digest: no extra login attempt
+        assertEquals(3, fake.loginPhaseRequests)
+        assertTrue(lines.none { Regex("[0-9A-F]{16,}").containsMatchIn(it) }, lines.toString())
+        assertTrue(lines.any { it.contains("\"device_confirm\":\"***\"") }, lines.toString())
+    }
+
+    @Test
+    fun nonTapoHostGivesClearError() {
+        val router = HttpPoster { _, _, _ -> HttpResult(404, ByteArray(0)) }
+        val e = assertFailsWith<TapoException> { TapoCamera(TapoClient("192.168.1.1", pw, http = router)).info() }
+        assertTrue(e.message!!.contains("ne parle pas le protocole Tapo"), e.message)
+    }
+
+    @Test
     fun wrongPasswordIsReportedForEachMode() {
         for (mode in AuthMode.entries) {
             val (_, cam) = setup(mode, clientPw = "pas le bon")

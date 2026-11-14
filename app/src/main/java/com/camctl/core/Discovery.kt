@@ -18,10 +18,22 @@ data class FoundDevice(
     val onvifName: String? = null,
     val onvifHardware: String? = null,
     val authHint: String? = null,
+    val isGateway: Boolean = false,
+    /** Filled by an authenticated getDeviceInfo: "C200 · Salon · MAC …". */
+    val identity: String? = null,
 ) {
-    /** Tapo cameras expose 443 (control), 554 (RTSP) and 2020 (ONVIF). */
-    val looksLikeTapo: Boolean get() = (443 in openPorts && (554 in openPorts || 2020 in openPorts)) || onvifName?.contains("TP-IPC", true) == true || onvifHardware != null && onvifHardware.startsWith("C", true)
-    val label: String get() = listOfNotNull(onvifHardware, onvifName).joinToString(" · ").ifEmpty { "Appareil inconnu" }
+    /**
+     * Tapo cameras always expose 443 (control API) and 8800 (proprietary stream). 554 (RTSP)
+     * and 2020 (ONVIF) only open once a camera account / third-party compatibility is enabled.
+     */
+    val looksLikeTapo: Boolean get() = !isGateway && ((443 in openPorts && (8800 in openPorts || 554 in openPorts || 2020 in openPorts)) ||
+        onvifName?.contains("TP-IPC", true) == true || authHint?.startsWith("Tapo") == true)
+    val rtspOpen: Boolean get() = 554 in openPorts
+    val label: String get() = when {
+        identity != null -> identity
+        isGateway -> "Box / routeur (passerelle du réseau)"
+        else -> listOfNotNull(onvifHardware, onvifName).joinToString(" · ").ifEmpty { if (looksLikeTapo) "Appareil Tapo" else "Appareil inconnu" }
+    }
 }
 
 object Discovery {
@@ -94,7 +106,7 @@ object Discovery {
             mapOf("Content-Type" to "application/json", "User-Agent" to "Tapo CameraClient Android", "requestByApp" to "true")).text)
         when {
             2 in r.intList("result", "tpap", "pake") -> "Tapo · TPAP"
-            r.errorCode() == -40413 -> "Tapo · encrypt_type 3"
+            r.errorCode() == -40413 -> "Tapo · login sécurisé"
             r.has("error_code") -> "Tapo (code ${r.errorCode()})"
             else -> null
         }
@@ -109,6 +121,8 @@ object Discovery {
                 onvifName = prev.onvifName ?: d.onvifName,
                 onvifHardware = prev.onvifHardware ?: d.onvifHardware,
                 authHint = prev.authHint ?: d.authHint,
+                isGateway = prev.isGateway || d.isGateway,
+                identity = prev.identity ?: d.identity,
             )
         }
         return m.values.sortedWith(compareByDescending<FoundDevice> { it.looksLikeTapo }.thenBy { it.ip.substringAfterLast('.').toIntOrNull() ?: 0 })
