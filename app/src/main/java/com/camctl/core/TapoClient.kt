@@ -255,25 +255,26 @@ class TapoClient(
     // ------------------------------------------------------------------ TPAP (SPAKE2+)
 
     private fun loginTpap(): Session {
-        if (tpapInfo == null) {
-            tpapInfo = runCatching { postLogin(jo("sub_method" to "discover")).at("result", "tpap") as? JSONObject }.getOrNull()
-        }
-        val username = if (tpapInfo.int("user_hash_type") == 1) Crypto.sha256HexUpper(USER) else Crypto.md5Hex(USER)
+        // detectMode() already asked login/discover; no second request (each one counts towards the lockout).
+        val hashType = tpapInfo.int("user_hash_type")
+        val username = if (hashType == 1) Crypto.sha256HexUpper(USER) else Crypto.md5Hex(USER)
+        log("TPAP: utilisateur admin haché en ${if (hashType == 1) "SHA-256" else "MD5"} (user_hash_type=${hashType ?: "inconnu"})")
         // Same candidates and order as the app: md5 hex, then sha256 upper hex of the account password.
-        val passcodes = listOf(Crypto.md5Hex(password), Crypto.sha256HexUpper(password))
-        var last: TapoException? = null
-        for (pc in passcodes) {
+        val passcodes = listOf("MD5" to Crypto.md5Hex(password), "SHA-256" to Crypto.sha256HexUpper(password))
+        val refusals = mutableListOf<String>()
+        for ((variant, pc) in passcodes) {
             try {
-                return tpapWith(username, pc)
+                return tpapWith(username, pc, variant)
             } catch (e: TapoException) {
-                last = e
-                if (e.code != -40401) throw e
+                refusals += "$variant → ${e.code}"
+                if (e.code != -40401 && e.code != -40418) throw e
             }
         }
-        throw TapoException(-40401, "Mot de passe incorrect (TPAP)").also { it.initCause(last) }
+        throw TapoException(-40401, "Mot de passe refusé par la caméra en TPAP (${refusals.joinToString()}). " +
+            "Il faut le mot de passe du compte TP-Link propriétaire de la caméra (pas le compte caméra).")
     }
 
-    private fun tpapWith(username: String, passcode: String): Session {
+    private fun tpapWith(username: String, passcode: String, variant: String): Session {
         val userRandom = ByteArray(32).also { random.nextBytes(it) }
         val b64 = Base64.getEncoder()
         val dec = Base64.getDecoder()
@@ -287,6 +288,8 @@ class TapoClient(
                 "passcode_type" to "userpw",
             )
         )
+        log("pake_register → ${redact(reg)}")
+        checkLockout(reg)
         val res = reg.optJSONObject("result") ?: throw TapoException(reg.errorCode(), "pake_register: ${TapoErrors.describe(reg.errorCode())}")
         val credential = Spake2pClient.applyExtraCrypt(
             passcode,
@@ -310,6 +313,7 @@ class TapoClient(
                 "user_confirm" to b64.encodeToString(client.userConfirm),
             )
         )
+        log("pake_share ($variant) → ${redact(share)}")
         val sr = share.optJSONObject("result")
         if (sr == null) {
             checkLockout(share)

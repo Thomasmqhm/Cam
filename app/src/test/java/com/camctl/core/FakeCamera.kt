@@ -82,7 +82,8 @@ class FakeCamera(val mode: AuthMode, private val password: String) : HttpPoster 
                 else -> jo("error_code" to -40413, "result" to jo("data" to jo("encrypt_type" to listOf("3"))))
             }
             AuthMode.TPAP -> when (sub) {
-                "discover" -> jo("error_code" to 0, "result" to jo("tpap" to jo("pake" to listOf(2), "user_hash_type" to 0)))
+                // As seen on a real camera (garage, 2026-11): discover refused, old login refused with -40211.
+                "discover" -> jo("error_code" to -40209)
                 "pake_register" -> {
                     require(p.str("username") == Crypto.md5Hex("admin"))
                     userRandom = d64.decode(p.str("user_random"))

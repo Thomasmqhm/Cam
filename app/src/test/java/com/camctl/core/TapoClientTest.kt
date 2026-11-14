@@ -70,6 +70,18 @@ class TapoClientTest {
     }
 
     @Test
+    fun tpapCameraThatRefusesDiscover() {
+        val fake = FakeCamera(AuthMode.TPAP, pw)
+        val lines = mutableListOf<String>()
+        val cam = TapoCamera(TapoClient("192.168.1.22", pw, http = fake, log = { lines += it }))
+        assertEquals("C210", cam.info().model)
+        assertEquals(AuthMode.TPAP, cam.client.mode)
+        // discover + probe + pake_register + pake_share
+        assertEquals(4, fake.loginPhaseRequests)
+        assertTrue(lines.any { it.startsWith("pake_share (MD5)") }, lines.toString())
+    }
+
+    @Test
     fun nonTapoHostGivesClearError() {
         val router = HttpPoster { _, _, _ -> HttpResult(404, ByteArray(0)) }
         val e = assertFailsWith<TapoException> { TapoCamera(TapoClient("192.168.1.1", pw, http = router)).info() }
